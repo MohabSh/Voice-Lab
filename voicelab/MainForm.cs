@@ -230,6 +230,8 @@ namespace voicelab
             SetUIBusy(true);
             ResetResults();
 
+            // ✅ دايماً أنشئ CancellationTokenSource جديد
+            cts?.Dispose();
             cts = new CancellationTokenSource();
             var token = cts.Token;
 
@@ -282,6 +284,7 @@ namespace voicelab
             }
             catch (OperationCanceledException)
             {
+                // ✅ هاد طبيعي عند الضغط على Cancel
                 lblProgressStatus.Text = "❌  Cancelled";
                 progressBar.Value = 0;
                 lblProgressPercent.Text = "0%";
@@ -309,6 +312,7 @@ namespace voicelab
 
             for (int c = 0; c < totalChunks; c++)
             {
+                // ✅ تحقق أول الـ loop
                 token.ThrowIfCancellationRequested();
 
                 int start = c * chunkSize;
@@ -319,6 +323,9 @@ namespace voicelab
                 var compressed = algo.Compress(chunk);
                 output.AddRange(compressed);
 
+                // ✅ تحقق ثاني بعد الضغط — في حال أخذ وقت طويل
+                token.ThrowIfCancellationRequested();
+
                 double pct = (c + 1.0) / totalChunks * 100.0;
                 double cRatio = (double)(chunk.Length * sizeof(short))
                                     / Math.Max(1, compressed.Length);
@@ -327,15 +334,19 @@ namespace voicelab
                     ? ((c + 1.0) * chunkSize) / elapsed / 1000.0
                     : 0;
 
-                Invoke(() =>
+                // ✅ تأكد إن الفورم ما زال موجوداً قبل Invoke
+                if (!IsDisposed && IsHandleCreated)
                 {
-                    progressBar.Value = (int)pct;
-                    lblProgressPercent.Text = $"{(int)pct}%";
-                    ratioPoints.Add(Math.Round(cRatio, 2));
-                    speedPoints.Add(Math.Round(kSampSec, 1));
-                    panelChartRatio.Invalidate();
-                    panelChartSpeed.Invalidate();
-                });
+                    Invoke(() =>
+                    {
+                        progressBar.Value = (int)pct;
+                        lblProgressPercent.Text = $"{(int)pct}%";
+                        ratioPoints.Add(Math.Round(cRatio, 2));
+                        speedPoints.Add(Math.Round(kSampSec, 1));
+                        panelChartRatio.Invalidate();
+                        panelChartSpeed.Invalidate();
+                    });
+                }
             }
 
             return output.ToArray();
@@ -389,23 +400,66 @@ namespace voicelab
             using var dlg = new SaveFileDialog
             {
                 Title = "Save Audio",
-                Filter = "Compressed VLB File|*.vlb|WAV File (decompressed PCM)|*.wav",
+                Filter = "WAV File (decompressed PCM)|*.wav|Compressed VLB File|*.vlb",
                 FileName = Path.GetFileNameWithoutExtension(
-                               currentAudio?.FileName ?? "output") + "_compressed",
+                               currentAudio?.FileName ?? "output") + "_decompressed",
+                FilterIndex = 1  // جعل WAV هو الخيار الافتراضي
             };
 
             if (dlg.ShowDialog() != DialogResult.OK) return;
 
             try
             {
+                // الخيار 1: حفظ كـ WAV (ملف مفكوك - غير مضغوط)
                 if (dlg.FilterIndex == 1)
                 {
-                    // ── Save compressed .vlb with header ───────────────────
-                    // Header: "VLB\0" | algoLen(1) | algo(N) | sampleRate(4)
-                    //         | channels(2) | quantLvls(4) | sampleCount(4)
-                    //         | compressed bytes…
+                    // التأكد من وجود البيانات المفكوكة
+                    if (lastDecompressedSamples == null)
+                    {
+                        MessageBox.Show(
+                            "Please decompress the file first before saving as WAV.\n\n" +
+                            "Click 'Decompress' button first, then try saving again.",
+                            "Warning",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    int sampleRate;
+
+                    if (isVlbLoaded)
+                    {
+                        sampleRate = vlbSampleRate;
+                    }
+                    else
+                    {
+                        sampleRate = currentAudio?.SampleRate ?? 44100;
+                    }
+
+                    AudioConverter.SaveAsWav(
+                        lastDecompressedSamples,
+                        dlg.FileName,
+                        sampleRate);
+
+                    MessageBox.Show(
+                        $"✅ Decompressed WAV file saved successfully!\n\n" +
+                        $"File: {dlg.FileName}\n" +
+                        $"Recovered Samples: {lastDecompressedSamples.Length:N0}\n" +
+                        $"Sample Rate: {sampleRate} Hz\n" +
+                        $"This is the DECOMPRESSED (uncompressed) audio.",
+                        "Save Success",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+                // الخيار 2: حفظ كـ VLB (ملف مضغوط)
+                else
+                {
                     string algoName = lastAlgorithm.Name;
-                    int sampleRate = int.Parse(cmbSampleRate.Text);
+
+                    int sampleRate = currentAudio != null
+                        ? currentAudio.SampleRate
+                        : int.Parse(cmbSampleRate.Text);
+
                     int quantLevels = int.Parse(cmbQuantization.Text);
 
                     using var ms = new MemoryStream();
@@ -424,26 +478,15 @@ namespace voicelab
                     File.WriteAllBytes(dlg.FileName, ms.ToArray());
 
                     MessageBox.Show(
-                        $"✅  Compressed file saved!\n\n" +
-                        $"Original PCM  : {lastReport?.OriginalSizeKB:F2} KB\n" +
-                        $"VLB file size : {ms.Length / 1024.0:F2} KB\n" +
-                        $"Ratio         : {lastReport?.Ratio:F2}x\n\n" +
-                        $"You can reopen this .vlb file later to decompress or play it.",
-                        "Save", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-                else
-                {
-                    // ── Save decompressed WAV ──────────────────────────────
-                    short[] toSave = lastDecompressedSamples
-                                     ?? lastAlgorithm.Decompress(lastCompressedData);
-                    int sr = int.Parse(cmbSampleRate.Text);
-                    AudioConverter.SaveAsWav(toSave, dlg.FileName, sr);
-
-                    MessageBox.Show(
-                        $"✅  WAV file saved.\n\n" +
-                        "This is the reconstructed (decompressed) audio.\n" +
-                        "To save the small compressed file choose *.vlb.",
-                        "Save", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        $"✅ Compressed VLB file saved!\n\n" +
+                        $"File: {dlg.FileName}\n" +
+                        $"Original PCM: {lastReport?.OriginalSizeKB:F2} KB\n" +
+                        $"VLB size: {ms.Length / 1024.0:F2} KB\n" +
+                        $"Ratio: {lastReport?.Ratio:F2}x\n\n" +
+                        $"This is the COMPRESSED audio.",
+                        "Save Success",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
                 }
             }
             catch (Exception ex)
