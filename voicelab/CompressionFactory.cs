@@ -4,9 +4,10 @@ namespace voicelab
 {
     public static class CompressionFactory
     {
-        public static IAudioCompressionAlgorithm Create(string name)
+        // تغيير الدالة لاستقبال معامل الإعدادات
+        public static IAudioCompressionAlgorithm Create(string name, int quantizationLevels)
         {
-            return name switch
+            IAudioCompressionAlgorithm algorithm = name switch
             {
                 "DPCM" => new DPCM(),
                 "Delta Modulation" => new DeltaModulation(),
@@ -15,6 +16,11 @@ namespace voicelab
                 "Adaptive Delta Modulation" => new AdaptiveDeltaModulation(),
                 _ => throw new System.Exception($"Unknown algorithm: {name}")
             };
+
+            // تطبيق الإعدادات على الخوارزمية
+            algorithm.Configure(quantizationLevels);
+
+            return algorithm;
         }
     }
 }

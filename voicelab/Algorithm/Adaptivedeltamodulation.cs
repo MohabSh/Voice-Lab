@@ -5,6 +5,13 @@ public class AdaptiveDeltaModulation : IAudioCompressionAlgorithm
 {
     public string Name => "Adaptive Delta Modulation";
 
+    private int _quantizationLevels = 2; // افتراضي: 2 مستويات (بت واحد)
+
+    public void Configure(int quantizationLevels)
+    {
+        _quantizationLevels = quantizationLevels;
+    }
+
     private const int MinStep = 100;
     private const int MaxStep = 8000;
 
@@ -16,25 +23,38 @@ public class AdaptiveDeltaModulation : IAudioCompressionAlgorithm
         byte currentByte = 0;
         int bitIndex = 0;
 
+        // حساب عدد البتات المطلوبة لكل عينة بناءً على مستويات التكميم
+        int bitsPerSample = (int)System.Math.Log2(_quantizationLevels);
+        int samplesPerByte = 8 / bitsPerSample;
+
         foreach (var s in samples)
         {
-            byte bit = (byte)(s >= prev ? 1 : 0);
+            // تكميم الفرق بناءً على عدد المستويات
+            int diff = s - prev;
+            int maxDiff = 32768;
+            int stepSize = maxDiff / _quantizationLevels;
+            int quantizedIndex = (diff + maxDiff) / stepSize;
+            if (quantizedIndex >= _quantizationLevels) quantizedIndex = _quantizationLevels - 1;
+            if (quantizedIndex < 0) quantizedIndex = 0;
 
-            currentByte |= (byte)(bit << (7 - bitIndex));
+            // تخزين القيمة المكممة
+            currentByte |= (byte)(quantizedIndex << (8 - bitsPerSample - (bitIndex * bitsPerSample)));
             bitIndex++;
 
-            if (bitIndex == 8)
+            if (bitIndex == samplesPerByte)
             {
                 result.Add(currentByte);
                 currentByte = 0;
                 bitIndex = 0;
             }
 
-            prev = (short)(prev + (bit == 1 ? step : -step));
+            // إعادة بناء القيمة
+            int dequantizedValue = (quantizedIndex * stepSize) - maxDiff;
+            prev = (short)(prev + dequantizedValue);
 
-            // Adapt step size
-            int diff = System.Math.Abs(s - prev);
-            step = diff > step
+            // تكييف حجم الخطوة
+            int actualDiff = System.Math.Abs(s - prev);
+            step = actualDiff > step
                 ? System.Math.Min(MaxStep, step * 2)
                 : System.Math.Max(MinStep, step / 2);
         }
@@ -52,12 +72,20 @@ public class AdaptiveDeltaModulation : IAudioCompressionAlgorithm
         int step = 500;
         short prev = 0;
 
+        int bitsPerSample = (int)System.Math.Log2(_quantizationLevels);
+        int samplesPerByte = 8 / bitsPerSample;
+        int maxDiff = 32768;
+        int stepSize = maxDiff / _quantizationLevels;
+
         foreach (var b in data)
         {
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < samplesPerByte; i++)
             {
-                byte bit = (byte)((b >> (7 - i)) & 1);
-                value = (short)(value + (bit == 1 ? step : -step));
+                int shift = 8 - bitsPerSample - (i * bitsPerSample);
+                int quantizedIndex = (b >> shift) & ((1 << bitsPerSample) - 1);
+
+                int dequantizedValue = (quantizedIndex * stepSize) - maxDiff;
+                value = (short)(value + dequantizedValue);
                 result.Add(value);
 
                 int diff = System.Math.Abs(value - prev);

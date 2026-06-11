@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("voicelab")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b13b3ef24c93c858e46c73cf20eacee4de9d4bef")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+30895263f85a7b6c3f71fa6af3e2f7460df52f1e")]
 [assembly: System.Reflection.AssemblyProductAttribute("voicelab")]
 [assembly: System.Reflection.AssemblyTitleAttribute("voicelab")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -6,7 +6,12 @@ public class DeltaModulation : IAudioCompressionAlgorithm
 {
     public string Name => "Delta Modulation";
 
-    private const int step = 500;
+    private int _quantizationLevels = 2; // افتراضي: 2 مستويات
+
+    public void Configure(int quantizationLevels)
+    {
+        _quantizationLevels = quantizationLevels;
+    }
 
     public byte[] Compress(short[] samples)
     {
@@ -15,21 +20,33 @@ public class DeltaModulation : IAudioCompressionAlgorithm
         byte currentByte = 0;
         int bitIndex = 0;
 
+        int bitsPerSample = (int)System.Math.Log2(_quantizationLevels);
+        int samplesPerByte = 8 / bitsPerSample;
+        int stepSize = 65536 / _quantizationLevels;
+        int maxValue = 32767;
+
         foreach (var s in samples)
         {
-            byte bit = (byte)(s > prev ? 1 : 0);
+            // تكميم الفرق
+            int diff = s - prev;
+            int quantizedIndex = (diff + maxValue) / stepSize;
+            if (quantizedIndex >= _quantizationLevels) quantizedIndex = _quantizationLevels - 1;
+            if (quantizedIndex < 0) quantizedIndex = 0;
 
-            currentByte |= (byte)(bit << (7 - bitIndex));
+            // تخزين القيمة المكممة
+            currentByte |= (byte)(quantizedIndex << (8 - bitsPerSample - (bitIndex * bitsPerSample)));
             bitIndex++;
 
-            if (bitIndex == 8)
+            if (bitIndex == samplesPerByte)
             {
                 result.Add(currentByte);
                 currentByte = 0;
                 bitIndex = 0;
             }
 
-            prev = (short)(prev + (bit == 1 ? step : -step));
+            // إعادة بناء القيمة
+            int dequantizedValue = (quantizedIndex * stepSize) - maxValue;
+            prev = (short)(prev + dequantizedValue);
         }
 
         if (bitIndex > 0)
@@ -45,12 +62,20 @@ public class DeltaModulation : IAudioCompressionAlgorithm
         List<short> result = new();
         short value = 0;
 
+        int bitsPerSample = (int)System.Math.Log2(_quantizationLevels);
+        int samplesPerByte = 8 / bitsPerSample;
+        int stepSize = 65536 / _quantizationLevels;
+        int maxValue = 32767;
+
         foreach (var b in data)
         {
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < samplesPerByte; i++)
             {
-                byte bit = (byte)((b >> (7 - i)) & 1);
-                value = (short)(value + (bit == 1 ? step : -step));
+                int shift = 8 - bitsPerSample - (i * bitsPerSample);
+                int quantizedIndex = (b >> shift) & ((1 << bitsPerSample) - 1);
+
+                int dequantizedValue = (quantizedIndex * stepSize) - maxValue;
+                value = (short)(value + dequantizedValue);
                 result.Add(value);
             }
         }
