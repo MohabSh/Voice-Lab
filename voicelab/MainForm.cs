@@ -23,6 +23,10 @@ namespace voicelab
         private IAudioCompressionAlgorithm lastAlgorithm;
         private CompressionReport lastReport;
 
+        // ── Playback Mode ─────────────────────────────────────────
+        private enum PlaybackMode { Original, Compressed, Decompressed }
+        private PlaybackMode currentPlaybackMode = PlaybackMode.Original;
+
         // ── VLB state (set when a .vlb is loaded) ─────────────────
         private bool isVlbLoaded = false;
         private int vlbSampleRate = 44100;
@@ -88,173 +92,177 @@ namespace voicelab
         }
 
         // ── Load a .vlb compressed file ───────────────────────────
-        // ── Load a .vlb compressed file ───────────────────────────
-private void LoadVlb(string path)
-{
-    try
-    {
-        var fileInfo = new FileInfo(path);
-        using var br = new BinaryReader(File.OpenRead(path));
-
-        // Read header
-        byte[] magic = br.ReadBytes(4);
-        if (magic[0] != 'V' || magic[1] != 'L' || magic[2] != 'B')
-            throw new InvalidDataException("Not a valid VLB file.");
-
-        int algoLen = br.ReadByte();
-        string algoName = System.Text.Encoding.UTF8.GetString(br.ReadBytes(algoLen));
-        int sampleRate = br.ReadInt32();
-        int channels = br.ReadInt16();
-        int quantLvls = br.ReadInt32();
-        int sampleCount = br.ReadInt32();
-
-        // Rest is compressed data
-        lastCompressedData = br.ReadBytes((int)(fileInfo.Length - br.BaseStream.Position));
-
-        // ✅ التعديل هنا: تمرير quantLvls إلى المصنع
-        lastAlgorithm = CompressionFactory.Create(algoName, quantLvls);
-
-        // Decompress immediately so we can play + show info
-        lastDecompressedSamples = lastAlgorithm.Decompress(lastCompressedData);
-
-        // Store VLB playback settings
-        isVlbLoaded = true;
-        vlbSampleRate = sampleRate;
-        vlbChannels = channels;
-
-        // Sync UI combos to saved settings
-        SelectComboItem(cmbSampleRate, sampleRate.ToString());
-        SelectComboItem(cmbQuantization, quantLvls.ToString());
-        SelectComboItem(cmbAlgorithms, algoName);
-
-        // Show file info
-        double origKB = (double)sampleCount * 2 / 1024.0;
-        double compKB = lastCompressedData.Length / 1024.0;
-        double ratio = origKB > 0 ? origKB / compKB : 1;
-
-        lblFileName.Text = "📦  " + Path.GetFileName(path) + "  [VLB]";
-        lblSize.Text = $"💾  {compKB:F2} KB  (compressed)";
-        lblDuration.Text = $"⏱  {TimeSpan.FromSeconds((double)sampleCount / sampleRate):hh\\:mm\\:ss}";
-        lblSampleRate.Text = $"📶  {sampleRate} Hz";
-        lblChannels.Text = $"🔊  {channels} ch";
-        lblBitRate.Text = $"⚡  {algoName}";
-        lblEncoding.Text = $"🔖  VLB / {algoName}";
-
-        lblCompressedSize.Text = $"Compressed: {compKB:F2} KB";
-        lblRatio.Text = $"Ratio: {ratio:F2}x";
-        lblProgressStatus.Text = $"✅  VLB loaded — {sampleCount:N0} samples recovered";
-        progressBar.Value = 100;
-        lblProgressPercent.Text = "100%";
-    }
-    catch (Exception ex)
-    {
-        MessageBox.Show("Error loading VLB:\n" + ex.Message,
-            "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════
-//  COMPRESS
-// ═══════════════════════════════════════════════════════════
-private async void btnCompress_Click(object sender, EventArgs e)
-{
-    if (currentAudio == null)
-    {
-        MessageBox.Show("Open an audio file first.", "Warning",
-            MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
-    }
-
-    string algoName = cmbAlgorithms.SelectedItem?.ToString();
-    if (string.IsNullOrEmpty(algoName))
-    {
-        MessageBox.Show("Select an algorithm first.");
-        return;
-    }
-
-    int sampleRate = int.Parse(cmbSampleRate.Text);
-    int quantizationLevels = int.Parse(cmbQuantization.Text);
-
-    SetUIBusy(true);
-    ResetResults();
-
-    // ✅ دايماً أنشئ CancellationTokenSource جديد
-    cts?.Dispose();
-    cts = new CancellationTokenSource();
-    var token = cts.Token;
-
-    try
-    {
-        lblProgressStatus.Text = "Decoding audio to PCM…";
-        short[] samples = await Task.Run(
-            () => AudioConverter.ToPCM(currentAudio.FilePath), token);
-
-        if (token.IsCancellationRequested)
+        private void LoadVlb(string path)
         {
-            HandleCancellation();
-            return;
+            try
+            {
+                var fileInfo = new FileInfo(path);
+                using var br = new BinaryReader(File.OpenRead(path));
+
+                // Read header
+                byte[] magic = br.ReadBytes(4);
+                if (magic[0] != 'V' || magic[1] != 'L' || magic[2] != 'B')
+                    throw new InvalidDataException("Not a valid VLB file.");
+
+                int algoLen = br.ReadByte();
+                string algoName = System.Text.Encoding.UTF8.GetString(br.ReadBytes(algoLen));
+                int sampleRate = br.ReadInt32();
+                int channels = br.ReadInt16();
+                int quantLvls = br.ReadInt32();
+                int sampleCount = br.ReadInt32();
+
+                // Rest is compressed data
+                lastCompressedData = br.ReadBytes((int)(fileInfo.Length - br.BaseStream.Position));
+
+                lastAlgorithm = CompressionFactory.Create(algoName, quantLvls);
+
+                // Decompress immediately so we can play + show info
+                lastDecompressedSamples = lastAlgorithm.Decompress(lastCompressedData);
+
+                // Store VLB playback settings
+                isVlbLoaded = true;
+                vlbSampleRate = sampleRate;
+                vlbChannels = channels;
+
+                // ✅ VLB loaded = already decompressed, ready to play
+                currentPlaybackMode = PlaybackMode.Decompressed;
+
+                // Sync UI combos to saved settings
+                SelectComboItem(cmbSampleRate, sampleRate.ToString());
+                SelectComboItem(cmbQuantization, quantLvls.ToString());
+                SelectComboItem(cmbAlgorithms, algoName);
+
+                // Show file info
+                double origKB = (double)sampleCount * 2 / 1024.0;
+                double compKB = lastCompressedData.Length / 1024.0;
+                double ratio = origKB > 0 ? origKB / compKB : 1;
+
+                lblFileName.Text = "📦  " + Path.GetFileName(path) + "  [VLB]";
+                lblSize.Text = $"💾  {compKB:F2} KB  (compressed)";
+                lblDuration.Text = $"⏱  {TimeSpan.FromSeconds((double)sampleCount / sampleRate):hh\\:mm\\:ss}";
+                lblSampleRate.Text = $"📶  {sampleRate} Hz";
+                lblChannels.Text = $"🔊  {channels} ch";
+                lblBitRate.Text = $"⚡  {algoName}";
+                lblEncoding.Text = $"🔖  VLB / {algoName}";
+
+                lblCompressedSize.Text = $"Compressed: {compKB:F2} KB";
+                lblRatio.Text = $"Ratio: {ratio:F2}x";
+                lblProgressStatus.Text = $"✅  VLB loaded — {sampleCount:N0} samples recovered";
+                progressBar.Value = 100;
+                lblProgressPercent.Text = "100%";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Error loading VLB:\n" + ex.Message,
+                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
-        // ✅ التعديل هنا: تمرير quantizationLevels إلى المصنع
-        lastAlgorithm = CompressionFactory.Create(algoName, quantizationLevels);
-        
-        lblProgressStatus.Text = $"Compressing with {algoName}…";
-
-        var sw = Stopwatch.StartNew();
-        lastCompressedData = await Task.Run(
-            () => CompressWithProgress(samples, lastAlgorithm, token), token);
-        sw.Stop();
-
-        // ✅ تحقق إذا تم الإلغاء (النتيجة null)
-        if (lastCompressedData == null || token.IsCancellationRequested)
+        // ═══════════════════════════════════════════════════════════
+        //  COMPRESS
+        // ═══════════════════════════════════════════════════════════
+        private async void btnCompress_Click(object sender, EventArgs e)
         {
-            HandleCancellation();
-            return;
+            if (currentAudio == null)
+            {
+                MessageBox.Show("Open an audio file first.", "Warning",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string algoName = cmbAlgorithms.SelectedItem?.ToString();
+            if (string.IsNullOrEmpty(algoName))
+            {
+                MessageBox.Show("Select an algorithm first.");
+                return;
+            }
+
+            int sampleRate = int.Parse(cmbSampleRate.Text);
+            int quantizationLevels = int.Parse(cmbQuantization.Text);
+
+            SetUIBusy(true);
+            ResetResults();
+
+            cts?.Dispose();
+            cts = new CancellationTokenSource();
+            var token = cts.Token;
+
+            try
+            {
+                lblProgressStatus.Text = "Decoding audio to PCM…";
+                short[] samples = await Task.Run(
+                    () => AudioConverter.ToPCM(currentAudio.FilePath), token);
+
+                if (token.IsCancellationRequested)
+                {
+                    HandleCancellation();
+                    return;
+                }
+
+                lastAlgorithm = CompressionFactory.Create(algoName, quantizationLevels);
+
+                lblProgressStatus.Text = $"Compressing with {algoName}…";
+
+                var sw = Stopwatch.StartNew();
+                lastCompressedData = await Task.Run(
+                    () => CompressWithProgress(samples, lastAlgorithm, token), token);
+                sw.Stop();
+
+                if (lastCompressedData == null || token.IsCancellationRequested)
+                {
+                    HandleCancellation();
+                    return;
+                }
+
+                double origBytes = samples.Length * sizeof(short);
+                double compBytes = lastCompressedData.Length;
+                double ratio = origBytes / compBytes;
+                double saving = (1.0 - compBytes / origBytes) * 100.0;
+
+                lastReport = new CompressionReport
+                {
+                    Algorithm = algoName,
+                    SampleRate = sampleRate,
+                    QuantizationLevels = quantizationLevels,
+                    OriginalSizeKB = origBytes / 1024.0,
+                    CompressedSizeKB = compBytes / 1024.0,
+                    Ratio = ratio,
+                    SavingPercent = saving,
+                    ElapsedMs = sw.ElapsedMilliseconds,
+                    SampleCount = samples.Length,
+                    Channels = currentAudio.Channels,
+                    OriginalBitRate = currentAudio.BitRate,
+                    EncodingType = currentAudio.EncodingType,
+                };
+
+                // ✅ فك الضغط للتشغيل الفوري بعد الضغط
+                lastDecompressedSamples = lastAlgorithm.Decompress(lastCompressedData);
+                currentPlaybackMode = PlaybackMode.Compressed;
+                UpdateAudioInfoLabels();
+
+                lblCompressedSize.Text = $"Compressed: {compBytes / 1024.0:F2} KB";
+                lblRatio.Text = $"Ratio: {ratio:F2}x  ({saving:F1}% saved)";
+                lblProgressStatus.Text = "✅  Done!";
+                progressBar.Value = 100;
+                lblProgressPercent.Text = "100%";
+
+                ShowReport(lastReport);
+            }
+            catch (OperationCanceledException)
+            {
+                HandleCancellation();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Compression error:\n" + ex.Message,
+                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                SetUIBusy(false);
+            }
         }
 
-        double origBytes = samples.Length * sizeof(short);
-        double compBytes = lastCompressedData.Length;
-        double ratio = origBytes / compBytes;
-        double saving = (1.0 - compBytes / origBytes) * 100.0;
-
-        lastReport = new CompressionReport
-        {
-            Algorithm = algoName,
-            SampleRate = sampleRate,
-            QuantizationLevels = quantizationLevels,
-            OriginalSizeKB = origBytes / 1024.0,
-            CompressedSizeKB = compBytes / 1024.0,
-            Ratio = ratio,
-            SavingPercent = saving,
-            ElapsedMs = sw.ElapsedMilliseconds,
-            SampleCount = samples.Length,
-            Channels = currentAudio.Channels,
-            OriginalBitRate = currentAudio.BitRate,
-            EncodingType = currentAudio.EncodingType,
-        };
-
-        lblCompressedSize.Text = $"Compressed: {compBytes / 1024.0:F2} KB";
-        lblRatio.Text = $"Ratio: {ratio:F2}x  ({saving:F1}% saved)";
-        lblProgressStatus.Text = "✅  Done!";
-        progressBar.Value = 100;
-        lblProgressPercent.Text = "100%";
-
-        ShowReport(lastReport);
-    }
-    catch (OperationCanceledException)
-    {
-        HandleCancellation();
-    }
-    catch (Exception ex)
-    {
-        MessageBox.Show("Compression error:\n" + ex.Message,
-            "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-    }
-    finally
-    {
-        SetUIBusy(false);
-    }
-}
         private static void SelectComboItem(ComboBox cmb, string value)
         {
             int idx = cmb.Items.IndexOf(value);
@@ -266,16 +274,24 @@ private async void btnCompress_Click(object sender, EventArgs e)
         // ═══════════════════════════════════════════════════════════
         private void btnPlay_Click(object sender, EventArgs e)
         {
-            // If a VLB is loaded, play the decompressed samples from memory
-            if (isVlbLoaded && lastDecompressedSamples != null)
+            switch (currentPlaybackMode)
             {
-                player.PlayFromSamples(lastDecompressedSamples, vlbSampleRate, vlbChannels);
-                return;
-            }
+                case PlaybackMode.Compressed:
+                case PlaybackMode.Decompressed:
+                    if (lastDecompressedSamples != null)
+                    {
+                        int sr = isVlbLoaded ? vlbSampleRate : (currentAudio?.SampleRate ?? 44100);
+                        int ch = isVlbLoaded ? vlbChannels : (currentAudio?.Channels ?? 1);
+                        player.PlayFromSamples(lastDecompressedSamples, sr, ch);
+                    }
+                    break;
 
-            // Otherwise play the original audio file
-            if (currentAudio != null)
-                player.Play(currentAudio.FilePath);
+                case PlaybackMode.Original:
+                default:
+                    if (currentAudio != null)
+                        player.Play(currentAudio.FilePath);
+                    break;
+            }
         }
 
         private void btnStop_Click(object sender, EventArgs e) => player.Stop();
@@ -295,6 +311,10 @@ private async void btnCompress_Click(object sender, EventArgs e)
             lastAlgorithm = null;
             lastReport = null;
 
+            // ✅ إعادة وضع التشغيل للأصلي
+            currentPlaybackMode = PlaybackMode.Original;
+            UpdateAudioInfoLabels();
+
             ratioPoints.Clear();
             speedPoints.Clear();
 
@@ -308,10 +328,6 @@ private async void btnCompress_Click(object sender, EventArgs e)
             panelChartSpeed.Invalidate();
         }
 
-        // ═══════════════════════════════════════════════════════════
-        //  COMPRESS
-        // ═══════════════════════════════════════════════════════════
-        
         // ✅ دالة مساعدة لمعالجة الإلغاء بشكل موحد
         private void HandleCancellation()
         {
@@ -321,20 +337,21 @@ private async void btnCompress_Click(object sender, EventArgs e)
             lblCompressedSize.Text = "Compressed Size: —";
             lblRatio.Text = "Ratio: —";
 
-            // تنظيف البيانات الجزئية
             lastCompressedData = null;
             lastDecompressedSamples = null;
             lastReport = null;
+            currentPlaybackMode = PlaybackMode.Original;
 
             ratioPoints.Clear();
             speedPoints.Clear();
             panelChartRatio.Invalidate();
             panelChartSpeed.Invalidate();
         }
+
         private byte[] CompressWithProgress(
-      short[] samples,
-      IAudioCompressionAlgorithm algo,
-      CancellationToken token)
+            short[] samples,
+            IAudioCompressionAlgorithm algo,
+            CancellationToken token)
         {
             const int chunkSize = 2048;
             int totalChunks = (int)Math.Ceiling(samples.Length / (double)chunkSize);
@@ -343,12 +360,8 @@ private async void btnCompress_Click(object sender, EventArgs e)
 
             for (int c = 0; c < totalChunks; c++)
             {
-                // ✅ تحقق أول الـ loop
                 if (token.IsCancellationRequested)
-                {
-                    // بدلاً من throw، نرجع null للإشارة إلى الإلغاء
                     return null;
-                }
 
                 int start = c * chunkSize;
                 int len = Math.Min(chunkSize, samples.Length - start);
@@ -358,11 +371,8 @@ private async void btnCompress_Click(object sender, EventArgs e)
                 var compressed = algo.Compress(chunk);
                 output.AddRange(compressed);
 
-                // ✅ تحقق ثاني بعد الضغط
                 if (token.IsCancellationRequested)
-                {
                     return null;
-                }
 
                 double pct = (c + 1.0) / totalChunks * 100.0;
                 double cRatio = (double)(chunk.Length * sizeof(short))
@@ -372,7 +382,6 @@ private async void btnCompress_Click(object sender, EventArgs e)
                     ? ((c + 1.0) * chunkSize) / elapsed / 1000.0
                     : 0;
 
-                // ✅ تأكد إن الفورم ما زال موجوداً قبل Invoke
                 if (!IsDisposed && IsHandleCreated)
                 {
                     try
@@ -392,7 +401,6 @@ private async void btnCompress_Click(object sender, EventArgs e)
                     }
                     catch (ObjectDisposedException)
                     {
-                        // تم إغلاق النموذج - نتوقف عن التحديث
                         return null;
                     }
                 }
@@ -416,6 +424,11 @@ private async void btnCompress_Click(object sender, EventArgs e)
             try
             {
                 lastDecompressedSamples = lastAlgorithm.Decompress(lastCompressedData);
+
+                // ✅ بعد فك الضغط، Play يشغل المفكوك
+                currentPlaybackMode = PlaybackMode.Decompressed;
+                UpdateAudioInfoLabels();
+
                 MessageBox.Show(
                     $"✅  Decompression completed!\n\n" +
                     $"Recovered Samples: {lastDecompressedSamples.Length:N0}\n\n" +
@@ -437,7 +450,7 @@ private async void btnCompress_Click(object sender, EventArgs e)
             try
             {
                 cts?.Cancel();
-                btnCancel.Enabled = false; // تعطيل زر الإلغاء فوراً
+                btnCancel.Enabled = false;
                 lblProgressStatus.Text = "Cancelling...";
             }
             catch (Exception ex)
@@ -445,6 +458,7 @@ private async void btnCompress_Click(object sender, EventArgs e)
                 Debug.WriteLine($"Cancel error: {ex.Message}");
             }
         }
+
         // ═══════════════════════════════════════════════════════════
         //  SAVE
         // ═══════════════════════════════════════════════════════════
@@ -463,17 +477,15 @@ private async void btnCompress_Click(object sender, EventArgs e)
                 Filter = "WAV File (decompressed PCM)|*.wav|Compressed VLB File|*.vlb",
                 FileName = Path.GetFileNameWithoutExtension(
                                currentAudio?.FileName ?? "output") + "_decompressed",
-                FilterIndex = 1  // جعل WAV هو الخيار الافتراضي
+                FilterIndex = 1
             };
 
             if (dlg.ShowDialog() != DialogResult.OK) return;
 
             try
             {
-                // الخيار 1: حفظ كـ WAV (ملف مفكوك - غير مضغوط)
                 if (dlg.FilterIndex == 1)
                 {
-                    // التأكد من وجود البيانات المفكوكة
                     if (lastDecompressedSamples == null)
                     {
                         MessageBox.Show(
@@ -485,16 +497,9 @@ private async void btnCompress_Click(object sender, EventArgs e)
                         return;
                     }
 
-                    int sampleRate;
-
-                    if (isVlbLoaded)
-                    {
-                        sampleRate = vlbSampleRate;
-                    }
-                    else
-                    {
-                        sampleRate = currentAudio?.SampleRate ?? 44100;
-                    }
+                    int sampleRate = isVlbLoaded
+                        ? vlbSampleRate
+                        : currentAudio?.SampleRate ?? 44100;
 
                     AudioConverter.SaveAsWav(
                         lastDecompressedSamples,
@@ -511,7 +516,6 @@ private async void btnCompress_Click(object sender, EventArgs e)
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
                 }
-                // الخيار 2: حفظ كـ VLB (ملف مضغوط)
                 else
                 {
                     string algoName = lastAlgorithm.Name;
@@ -604,6 +608,47 @@ private async void btnCompress_Click(object sender, EventArgs e)
                 LoadVlb(files[0]);
             else
                 LoadAudio(files[0]);
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        //  UPDATE AUDIO INFO LABELS
+        // ═══════════════════════════════════════════════════════════
+        private void UpdateAudioInfoLabels()
+        {
+            switch (currentPlaybackMode)
+            {
+                case PlaybackMode.Compressed:
+                    lblFileName.Text = "📦  " + (currentAudio?.FileName ?? "Unknown") + "  [Compressed]";
+                    lblSize.Text = $"💾  {lastReport?.CompressedSizeKB:F2} KB  (compressed)";
+                    lblSampleRate.Text = $"📶  {lastReport?.SampleRate ?? 0} Hz";
+                    lblChannels.Text = $"🔊  {lastReport?.Channels ?? 0} ch";
+                    lblBitRate.Text = $"⚡  {lastAlgorithm?.Name ?? "—"}";
+                    lblEncoding.Text = $"🔖  VLB / {lastAlgorithm?.Name ?? "—"}";
+                    break;
+
+                case PlaybackMode.Decompressed:
+                    lblFileName.Text = "🔓  " + (currentAudio?.FileName ?? "Unknown") + "  [Decompressed]";
+                    lblSize.Text = $"💾  {lastReport?.OriginalSizeKB:F2} KB  (decompressed)";
+                    lblSampleRate.Text = $"📶  {lastReport?.SampleRate ?? vlbSampleRate} Hz";
+                    lblChannels.Text = $"🔊  {lastReport?.Channels ?? vlbChannels} ch";
+                    lblBitRate.Text = $"⚡  PCM";
+                    lblEncoding.Text = $"🔖  WAV / PCM";
+                    break;
+
+                case PlaybackMode.Original:
+                default:
+                    if (currentAudio != null)
+                    {
+                        lblFileName.Text = "📄  " + currentAudio.FileName;
+                        lblSize.Text = $"💾  {currentAudio.FileSize / 1024.0:F2} KB";
+                        lblDuration.Text = $"⏱  {currentAudio.Duration:hh\\:mm\\:ss}";
+                        lblSampleRate.Text = $"📶  {currentAudio.SampleRate} Hz";
+                        lblChannels.Text = $"🔊  {currentAudio.Channels} ch";
+                        lblBitRate.Text = $"⚡  {currentAudio.BitRate / 1000.0:F0} kbps";
+                        lblEncoding.Text = $"🔖  {currentAudio.EncodingType}";
+                    }
+                    break;
+            }
         }
 
         // ═══════════════════════════════════════════════════════════

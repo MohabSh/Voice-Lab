@@ -5,9 +5,9 @@ using voicelab.Interface;
 public class DeltaModulation : IAudioCompressionAlgorithm
 {
     public string Name => "Delta Modulation";
-
+    
     private int _quantizationLevels = 2; // افتراضي: 2 مستويات
-
+    
     public void Configure(int quantizationLevels)
     {
         _quantizationLevels = quantizationLevels;
@@ -19,7 +19,7 @@ public class DeltaModulation : IAudioCompressionAlgorithm
         short prev = 0;
         byte currentByte = 0;
         int bitIndex = 0;
-
+        
         int bitsPerSample = (int)System.Math.Log2(_quantizationLevels);
         int samplesPerByte = 8 / bitsPerSample;
         int stepSize = 65536 / _quantizationLevels;
@@ -27,23 +27,21 @@ public class DeltaModulation : IAudioCompressionAlgorithm
 
         foreach (var s in samples)
         {
-            // تكميم الفرق
             int diff = s - prev;
             int quantizedIndex = (diff + maxValue) / stepSize;
             if (quantizedIndex >= _quantizationLevels) quantizedIndex = _quantizationLevels - 1;
             if (quantizedIndex < 0) quantizedIndex = 0;
-
-            // تخزين القيمة المكممة
+            
             currentByte |= (byte)(quantizedIndex << (8 - bitsPerSample - (bitIndex * bitsPerSample)));
             bitIndex++;
-
+            
             if (bitIndex == samplesPerByte)
             {
                 result.Add(currentByte);
                 currentByte = 0;
                 bitIndex = 0;
             }
-
+            
             // إعادة بناء القيمة
             int dequantizedValue = (quantizedIndex * stepSize) - maxValue;
             prev = (short)(prev + dequantizedValue);
@@ -61,7 +59,7 @@ public class DeltaModulation : IAudioCompressionAlgorithm
     {
         List<short> result = new();
         short value = 0;
-
+        
         int bitsPerSample = (int)System.Math.Log2(_quantizationLevels);
         int samplesPerByte = 8 / bitsPerSample;
         int stepSize = 65536 / _quantizationLevels;
@@ -73,7 +71,7 @@ public class DeltaModulation : IAudioCompressionAlgorithm
             {
                 int shift = 8 - bitsPerSample - (i * bitsPerSample);
                 int quantizedIndex = (b >> shift) & ((1 << bitsPerSample) - 1);
-
+                
                 int dequantizedValue = (quantizedIndex * stepSize) - maxValue;
                 value = (short)(value + dequantizedValue);
                 result.Add(value);
